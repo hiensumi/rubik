@@ -447,7 +447,7 @@ class RubikScannerApp:
         
         # Load YOLO model
         print("Loading YOLO model...")
-        self.yolo_model = YOLO("./best.pt")
+        self.yolo_model = YOLO("./YOLO.pt")
         print("YOLO model loaded.")
 
         # State
