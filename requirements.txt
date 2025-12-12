@@ -1,0 +1,7 @@
+dearpygui==2.1.1
+kociemba==1.2.1
+numpy==1.26.4
+opencv-python
+torch==2.6.0
+torchvision==0.21.0
+ultralytics
