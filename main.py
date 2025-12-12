@@ -23,8 +23,13 @@ from rubik_face_read import (
 # CONFIGURATION
 # ============================================================================
 
+if torch.cuda.is_available():
+    device = 0  # GPU
+else:
+    device = 'cpu'  # CPU
+
 CONFIG = {
-    "IMG_SIZE": 224,
+    "DEVICE": device,
 }
 
 # Color mapping to RGB (0-255) for DearPyGui
@@ -459,6 +464,9 @@ class RubikScannerApp:
         self.last_warped = None
         self.is_present = False
         self.presence_prob = 0.0
+        self.multiple_cubes_detected = False
+        self.warning_message = None
+        self.warning_time = 0
         
         # 3D view rotation
         self.rotation_x = 25
@@ -470,7 +478,6 @@ class RubikScannerApp:
         self.anim_moves = []
         self.anim_idx = 0
         self.anim_playing = False
-        self.anim_speed = 500
         self.anim_last_time = 0
         
         # Move animation (smooth rotation)
@@ -483,7 +490,13 @@ class RubikScannerApp:
         # Camera texture
         self.camera_width = 640
         self.camera_height = 480
-    
+
+        # Performance optimization
+        self.frame_count = 0
+        self.skip_frames = 3  # Run YOLO every 3 frames
+        self.cube = []
+        self.last_cube = []
+        
     def start_camera(self):
         """Start camera capture"""
         self.cap = cv2.VideoCapture(0)
@@ -513,60 +526,63 @@ class RubikScannerApp:
         clean_frame = frame.copy() # Keep a clean copy for warping/cropping
         original_h, original_w = frame.shape[:2]
         
+        self.frame_count += 1
+
         # 1. YOLO Detection
-        # Run inference on the frame
-        # results = self.yolo_model(clean_frame, verbose=False)
-        
-        results = self.yolo_model(
-            clean_frame, 
-            conf=0.25,           # Lower threshold
-            iou=0.45,            # Balanced NMS
-            verbose=False,
-            half=True,           # Use FP16 if GPU supports it
-            device=0,            # Explicit GPU
-            imgsz=320,           # Match training size
-            agnostic_nms=True,   # Faster NMS
-        )
-        
-        # Find best cube (class 0)
-        best_box = None
-        max_conf = 0
+        cubes = []
         cube_count = 0
+
+        if self.frame_count % self.skip_frames == 0:
+            results = self.yolo_model(
+                clean_frame, 
+                conf=0.5,           # Lower threshold
+                iou=0.1,            # Balanced NMS
+                verbose=False,
+                half=False,          # Use FP16 if GPU supports it (False for CPU stability)
+                device=CONFIG['DEVICE'],
+                imgsz=320,           # Match training size
+                agnostic_nms=True,   # Faster NMS
+            )
+            
+            # Find obvious cubes (class 0)
+            for result in results:
+                boxes = result.boxes
+                for box in boxes:
+                    cls = int(box.cls[0])
+                    conf = float(box.conf[0])
+                    # Assuming class 0 is cube. Adjust if your model has different classes.
+                    if cls == 0 and conf > 0.5: 
+                        cube_count += 1
+                        cubes.append((box.xyxy[0].cpu().numpy(), conf)) # x1, y1, x2, y2, confidence
+            
+            self.last_cube = cubes
+        else:
+            cubes = self.last_cube
+            if cubes is not None:
+                cube_count = len(cubes)
         
-        for result in results:
-            boxes = result.boxes
-            for box in boxes:
-                cls = int(box.cls[0])
-                conf = float(box.conf[0])
-                # Assuming class 0 is cube. Adjust if your model has different classes.
-                if cls == 0 and conf > 0.8: 
-                    cube_count += 1
-                    if conf > max_conf:
-                        max_conf = conf
-                        best_box = box.xyxy[0].cpu().numpy() # x1, y1, x2, y2
+        self.multiple_cubes_detected = (cube_count > 1)
         
-        if cube_count > 1:
-             cv2.putText(frame, "WARNING: MULTIPLE CUBES DETECTED!", (50, original_h // 2), 
+        # Show warning if triggered by capture attempt
+        if self.warning_message and time.time() - self.warning_time < 2.0:
+             cv2.putText(frame, self.warning_message, (50, original_h // 2), 
                        cv2.FONT_HERSHEY_SIMPLEX, 1.0, (0, 0, 255), 3)
-             cv2.putText(frame, "Please show only one cube.", (50, original_h // 2 + 40), 
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-             best_box = None # Prevent processing
         
         self.is_present = False
         self.presence_prob = 0.0
         
-        if best_box is not None:
-            x1, y1, x2, y2 = map(int, best_box)
+        for cube_box in cubes:
+            (x1, y1, x2, y2), conf = cube_box
             
-            # Ensure crop is within bounds
-            x1 = max(0, x1)
-            y1 = max(0, y1)
-            x2 = min(original_w, x2)
-            y2 = min(original_h, y2)
+            # Ensure crop is within bounds and convert to int
+            x1 = int(max(0, x1))
+            y1 = int(max(0, y1))
+            x2 = int(min(original_w, x2))
+            y2 = int(min(original_h, y2))
             
             # Draw YOLO box
             cv2.rectangle(frame, (x1, y1), (x2, y2), (255, 0, 0), 2)
-            cv2.putText(frame, f"Rubik: {max_conf:.2f}", (x1, y1-10), 
+            cv2.putText(frame, f"Rubik: {conf:.2f}", (x1, y1-10), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 0), 2)
 
             if x2 > x1 and y2 > y1:
@@ -575,7 +591,7 @@ class RubikScannerApp:
                 
                 # Simplified: Just use the YOLO crop as the "warped" image
                 self.is_present = True
-                self.presence_prob = max_conf
+                self.presence_prob = conf
                 
                 # Resize to expected size (224x224)
                 warped = cv2.resize(crop, (self.img_size, self.img_size))
@@ -614,6 +630,12 @@ class RubikScannerApp:
     
     def capture_face(self):
         """Capture current face"""
+        if self.multiple_cubes_detected:
+            self.warning_message = "Multiple cubes detected!"
+            self.warning_time = time.time()
+            print("Cannot capture: Multiple cubes detected. Please ensure only one cube is in view.")
+            return False
+
         next_face = self.cube_state.get_next_face()
         if self.last_warped is not None and next_face:
             lab_grid, _ = extract_face_lab(self.last_warped)
@@ -718,8 +740,6 @@ class RubikScannerApp:
 
 def run_app():
     """Run the DearPyGui application"""
-    # Load model
-    # model, device = load_model("rubik_model_pytorch.pt")
     app = RubikScannerApp()
     
     if not app.start_camera():
@@ -729,10 +749,9 @@ def run_app():
     dpg.create_context()
     
     # Create textures
-    cam_width, cam_height = 640, 480
     with dpg.texture_registry():
-        dpg.add_raw_texture(cam_width, cam_height, 
-                           np.zeros((cam_height, cam_width, 4), dtype=np.float32).flatten(),
+        dpg.add_raw_texture(app.camera_width, app.camera_height, 
+                           np.zeros((app.camera_height, app.camera_width, 4), dtype=np.float32).flatten(),
                            format=dpg.mvFormat_Float_rgba, tag="camera_texture")
     
     # Theme
@@ -1010,7 +1029,7 @@ def run_app():
             # Center - Camera feed
             with dpg.child_window(width=660, height=-1, border=False):
                 dpg.add_text("Camera Feed", color=(150, 150, 160))
-                dpg.add_image("camera_texture", width=640, height=480)
+                dpg.add_image("camera_texture", width=app.camera_width, height=app.camera_height)
             
             # Right panel - Cube state
             with dpg.child_window(width=-1, height=-1, border=False):
