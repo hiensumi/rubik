@@ -2,7 +2,7 @@
 
 A DearPyGui-based application that scans a physical Rubik's Cube with a webcam using YOLO for detection, reconstructs face colors, and produces a solution using Kociemba's algorithm.
 
-<video src="demo.mp4" controls width="600"></video>
+https://github.com/user-attachments/assets/de32d4c6-ca91-43ef-88c4-ae9894e5c7e0
 
 ## Requirements
 - Python 3.9+
