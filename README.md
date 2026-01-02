@@ -12,7 +12,6 @@ https://github.com/user-attachments/assets/de32d4c6-ca91-43ef-88c4-ae9894e5c7e0
 
 Install the dependencies (PowerShell example):
 ```powershell
-python -m pip install torch torchvision torchaudio --index-url https://download.pytorch.org/whl/cu121
 python -m pip install -r requirements.txt
 ```
 Adjust the PyTorch install command for your CUDA version or use the CPU-only wheel if needed.
